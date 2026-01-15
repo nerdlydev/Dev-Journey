@@ -1,134 +1,67 @@
-import React, {
-  createContext,
-  useContext,
-  useState,
-  useEffect,
-  useLayoutEffect,
-} from "react";
-import type { ReactNode } from "react";
-import api from "../api/axios";
-import { AxiosError } from "axios";
-import type { InternalAxiosRequestConfig } from "axios";
-import type { AuthContextType, User } from "../types/auth";
+import { createContext, useContext, useEffect, useState } from "react";
+import { api } from "../api/axios";
 
-// Create Context with undefined initial value
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-// Custom Hook for easier usage
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
+type AuthContextType = {
+  token: string | null;
+  setToken: (t: string | null) => void;
 };
 
-// Extend Axios Config to include the _retry flag
-interface CustomAxiosRequestConfig extends InternalAxiosRequestConfig {
-  _retry?: boolean;
-}
+const AuthContext = createContext<AuthContextType | null>(null);
 
-export const AuthProvider = ({ children }: { children: ReactNode }) => {
+export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  const login = async (username: string, password: string) => {
-    const res = await api.post("/login", { username, password });
-    setToken(res.data.accessToken);
-    setUser(res.data.user);
-  };
-
-  const logout = async () => {
-    try {
-      await api.post("/logout");
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setToken(null);
-      setUser(null);
-    }
-  };
-
-  // 1. Request Interceptor: Attach Token
-  useLayoutEffect(() => {
-    const authInterceptor = api.interceptors.request.use((config) => {
-      // If we have a token, add it to headers
-      if (token && config.headers) {
+  // Attach token
+  useEffect(() => {
+    const req = api.interceptors.request.use((config) => {
+      if (token) {
         config.headers.Authorization = `Bearer ${token}`;
       }
       return config;
     });
-
-    return () => api.interceptors.request.eject(authInterceptor);
+    return () => api.interceptors.request.eject(req);
   }, [token]);
 
-  // 2. Response Interceptor: Handle Token Refresh
-  useLayoutEffect(() => {
-    const refreshInterceptor = api.interceptors.response.use(
-      (response) => response,
-      async (error: AxiosError) => {
-        const originalRequest = error.config as CustomAxiosRequestConfig;
+  // Refresh on 401
+  useEffect(() => {
+    const res = api.interceptors.response.use(
+      (r) => r,
+      async (err) => {
+        const original = err.config;
 
-        if (
-          error.response?.status === 401 &&
-          originalRequest &&
-          !originalRequest._retry
-        ) {
-          originalRequest._retry = true;
-
+        if (err.response?.status === 401 && !original._retry) {
+          original._retry = true;
           try {
-            // Attempt to refresh
-            const res = await api.post("/refresh");
-            const newAccessToken = res.data.accessToken;
-
-            // Update state
-            setToken(newAccessToken);
-
-            // Update header and retry original request
-            if (originalRequest.headers) {
-              originalRequest.headers.Authorization = `Bearer ${newAccessToken}`;
-            }
-            return api(originalRequest);
-          } catch (refreshError) {
-            // Refresh failed, logout completely
+            const { data } = await api.post("/refresh");
+            setToken(data.accessToken);
+            original.headers.Authorization = `Bearer ${data.accessToken}`;
+            return api(original);
+          } catch {
             setToken(null);
-            setUser(null);
           }
         }
-        return Promise.reject(error);
-      }
+        return Promise.reject(err);
+      },
     );
-
-    return () => api.interceptors.response.eject(refreshInterceptor);
+    return () => api.interceptors.response.eject(res);
   }, []);
 
-  // 3. Initial Load
+  // Initial refresh on app load
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        // Try to get a new token using the cookie (if it exists)
-        const res = await api.post("/refresh");
-        setToken(res.data.accessToken);
-
-        // Fetch user profile
-        const userRes = await api.get("/me", {
-          headers: { Authorization: `Bearer ${res.data.accessToken}` },
-        });
-        setUser(userRes.data.user);
-      } catch (err) {
-        // User is not logged in, do nothing
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkAuth();
+    api
+      .post("/refresh")
+      .then((res) => setToken(res.data.accessToken))
+      .catch(() => setToken(null));
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, loading }}>
-      {!loading && children}
+    <AuthContext.Provider value={{ token, setToken }}>
+      {children}
     </AuthContext.Provider>
   );
+};
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be inside provider");
+  return ctx;
 };

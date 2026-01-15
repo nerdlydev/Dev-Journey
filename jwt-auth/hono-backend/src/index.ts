@@ -1,112 +1,134 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { setCookie, getCookie, deleteCookie } from "hono/cookie";
+import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { sign, verify } from "hono/jwt";
-import { JWTPayload } from "hono/utils/jwt/types";
+import { z } from "zod";
 
 const app = new Hono();
 
-// 1. Secrets (Use bun's .env support automatically)
-const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || "secret_access";
-const REFRESH_TOKEN_SECRET =
-  process.env.REFRESH_TOKEN_SECRET || "secret_refresh";
+/* ================== CONFIG ================== */
 
-// 2. Types
-interface UserPayload extends JWTPayload {
-  username: string;
-  role: string;
-  exp?: number;
-}
+const ACCESS_SECRET = "access-secret"; // env in prod
+const REFRESH_SECRET = "refresh-secret";
 
-// 3. Middleware
+const isProd = process.env.NODE_ENV === "production";
+
+/* ================== CORS ================== */
+
 app.use(
   "/*",
   cors({
-    origin: "http://localhost:5173", // Vite/React default port
-    credentials: true, // Essential for cookies
-  }),
+    origin: "http://localhost:5173",
+    credentials: true,
+  })
 );
 
-// 4. Routes
+/* ================== MOCK DB ================== */
+
+const users = [{ id: "1", email: "user@example.com", password: "password123" }];
+
+/* ================== SCHEMAS ================== */
+
+const loginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
+
+const jwtPayloadSchema = z.object({
+  sub: z.string(),
+  exp: z.number(),
+});
+
+/* ================== HELPERS ================== */
+
+const createAccessToken = (userId: string) =>
+  sign(
+    { sub: userId, exp: Math.floor(Date.now() / 1000) + 60 * 15 },
+    ACCESS_SECRET
+  );
+
+const createRefreshToken = (userId: string) =>
+  sign(
+    { sub: userId, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7 },
+    REFRESH_SECRET
+  );
+
+/* ================== ROUTES ================== */
+
+// LOGIN
 app.post("/login", async (c) => {
-  const { username, password } = await c.req.json();
+  const body = loginSchema.parse(await c.req.json());
 
-  // Mock DB Check
-  if (username !== "user" || password !== "password") {
-    return c.json({ message: "Invalid credentials" }, 401);
-  }
-
-  const payload: UserPayload = { username, role: "user" };
-
-  // Create Tokens
-  const accessToken = await sign(
-    { ...payload, exp: Math.floor(Date.now() / 1000) + 60 * 15 }, // 15 mins
-    ACCESS_TOKEN_SECRET,
+  const user = users.find(
+    (u) => u.email === body.email && u.password === body.password
   );
 
-  const refreshToken = await sign(
-    { ...payload, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 7 }, // 7 days
-    REFRESH_TOKEN_SECRET,
-  );
+  if (!user) return c.json({ message: "Invalid credentials" }, 401);
 
-  // HTTP-Only Cookie
-  setCookie(c, "refresh_token", refreshToken, {
+  const accessToken = await createAccessToken(user.id);
+  const refreshToken = await createRefreshToken(user.id);
+
+  setCookie(c, "refreshToken", refreshToken, {
     httpOnly: true,
-    secure: true, // Set to true if using HTTPS
-    sameSite: "Strict",
-    path: "/",
+    secure: isProd,
+    sameSite: "Lax",
+    path: "/refresh",
     maxAge: 60 * 60 * 24 * 7,
   });
 
-  return c.json({ accessToken, user: payload });
+  return c.json({
+    accessToken,
+    user: { id: user.id, email: user.email },
+  });
 });
 
+// REFRESH
 app.post("/refresh", async (c) => {
-  const refreshToken = getCookie(c, "refresh_token");
-
-  if (!refreshToken) return c.json({ message: "No refresh token" }, 401);
+  const token = getCookie(c, "refreshToken");
+  if (!token) return c.json({ message: "Unauthorized" }, 401);
 
   try {
-    const payload = (await verify(
-      refreshToken,
-      REFRESH_TOKEN_SECRET,
-    )) as UserPayload;
+    const rawPayload = await verify(token, REFRESH_SECRET);
+    const payload = jwtPayloadSchema.parse(rawPayload);
 
-    // Rotate tokens (Optional security measure: issue a new access token)
-    const newAccessToken = await sign(
-      {
-        username: payload.username,
-        role: payload.role,
-        exp: Math.floor(Date.now() / 1000) + 60 * 15,
-      },
-      ACCESS_TOKEN_SECRET,
-    );
+    const newAccessToken = await createAccessToken(payload.sub);
 
     return c.json({ accessToken: newAccessToken });
-  } catch (err) {
-    return c.json({ message: "Invalid refresh token" }, 401);
+  } catch {
+    return c.json({ message: "Unauthorized" }, 401);
   }
 });
 
-app.get("/me", async (c) => {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader) return c.json({ message: "Unauthorized" }, 401);
-
-  const token = authHeader.split(" ")[1];
-  try {
-    const payload = await verify(token, ACCESS_TOKEN_SECRET);
-    return c.json({ user: payload });
-  } catch (err) {
-    return c.json({ message: "Invalid token" }, 401);
-  }
-});
-
+// LOGOUT
 app.post("/logout", (c) => {
-  deleteCookie(c, "refresh_token");
+  deleteCookie(c, "refreshToken", { path: "/refresh" });
   return c.json({ message: "Logged out" });
 });
 
-export default {
-  port: 3000,
-  fetch: app.fetch,
-};
+/* ================== AUTH MIDDLEWARE ================== */
+
+app.use("/api/*", async (c, next) => {
+  const header = c.req.header("Authorization");
+  if (!header?.startsWith("Bearer "))
+    return c.json({ message: "Unauthorized" }, 401);
+
+  try {
+    const token = header.split(" ")[1];
+    const payload = jwtPayloadSchema.parse(await verify(token, ACCESS_SECRET));
+
+    c.set("userId", payload.sub);
+    await next();
+  } catch {
+    return c.json({ message: "Unauthorized" }, 401);
+  }
+});
+
+// PROTECTED
+app.get("/api/me", (c) => {
+  return c.json({
+    message: "Authorized",
+    userId: c.get("userId"),
+  });
+});
+
+export default app;

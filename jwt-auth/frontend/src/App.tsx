@@ -1,97 +1,60 @@
 import { useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthProvider";
-import api from "./api/axios";
+import { api } from "./api/axios";
 
-// Extract inner component to use the hook
-const Home = () => {
-  const { user, token, login, logout } = useAuth();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [data, setData] = useState<any>(null);
+const Login = () => {
+  const { setToken } = useAuth();
+  const [email, setEmail] = useState("user@example.com");
+  const [password, setPassword] = useState("password123");
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    login(username, password);
+  const login = async () => {
+    const { data } = await api.post("/login", { email, password });
+    setToken(data.accessToken);
   };
-
-  const getProtectedData = async () => {
-    try {
-      const res = await api.get("/me");
-      setData(res.data);
-    } catch (error) {
-      console.error("Failed to fetch");
-    }
-  };
-
-  if (!user) {
-    return (
-      <div style={{ padding: 20 }}>
-        <h2>Login (Bun + React + TS)</h2>
-        <form onSubmit={handleLogin} style={{ display: "flex", gap: 10 }}>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="user"
-          />
-          <input
-            value={password}
-            type="password"
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="password"
-          />
-          <button type="submit">Login</button>
-        </form>
-      </div>
-    );
-  }
 
   return (
-    <div style={{ padding: 20 }}>
-      <h1>Hi, {user.username}</h1>
-      <p>
-        Your role: <strong>{user.role}</strong>
-      </p>
-
-      <div
-        style={{
-          background: "#eee",
-          padding: 10,
-          borderRadius: 5,
-          marginBottom: 10,
-        }}
-      >
-        <small>Current Access Token (In Memory):</small>
-        <br />
-        <code style={{ wordBreak: "break-all" }}>{token}</code>
-      </div>
-
-      <button onClick={getProtectedData}>Call Protected API</button>
-      <button onClick={() => logout()} style={{ marginLeft: 10 }}>
-        Logout
-      </button>
-
-      {data && (
-        <pre
-          style={{
-            marginTop: 20,
-            background: "#222",
-            color: "#fff",
-            padding: 10,
-          }}
-        >
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      )}
-    </div>
+    <>
+      <button onClick={login}>Login</button>
+    </>
   );
 };
 
-function App() {
+const Dashboard = () => {
+  const { token, setToken } = useAuth();
+  const [msg, setMsg] = useState("");
+
+  if (!token) return <p>Not logged in</p>;
+
+  return (
+    <>
+      <button
+        onClick={async () => {
+          const { data } = await api.get("/api/me");
+          setMsg(data.message);
+        }}
+      >
+        Fetch
+      </button>
+
+      <button
+        onClick={async () => {
+          await api.post("/logout");
+          setToken(null);
+        }}
+      >
+        Logout
+      </button>
+
+      <p>{msg}</p>
+    </>
+  );
+};
+
+export default function App() {
   return (
     <AuthProvider>
-      <Home />
+      <Login />
+      <Dashboard />
     </AuthProvider>
   );
 }
-
-export default App;
