@@ -1,12 +1,6 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/axios";
-
-type AuthContextType = {
-  token: string | null;
-  setToken: (t: string | null) => void;
-};
-
-const AuthContext = createContext<AuthContextType | null>(null);
+import { AuthContext } from "./useAuth";
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
@@ -41,7 +35,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           }
         }
         return Promise.reject(err);
-      },
+      }
     );
     return () => api.interceptors.response.eject(res);
   }, []);
@@ -59,9 +53,4 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       {children}
     </AuthContext.Provider>
   );
-};
-export const useAuth = () => {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be inside provider");
-  return ctx;
 };
